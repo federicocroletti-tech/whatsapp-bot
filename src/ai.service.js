@@ -4,6 +4,8 @@ const knowledge = require("./knowledge.json");
 const client = process.env.OPENAI_API_KEY
   ? new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
+      timeout: 10000,
+      maxRetries: 1,
     })
   : null;
 
@@ -17,7 +19,7 @@ function askLocalKnowledge(userMessage) {
     message.includes("chiusi") ||
     message.includes("chiusura")
   ) {
-    return knowledge.orari || "Non ho informazioni sugli orari.";
+    return knowledge.orari || "Non ho ancora informazioni sugli orari dell'officina.";
   }
 
   if (
@@ -27,7 +29,7 @@ function askLocalKnowledge(userMessage) {
     message.includes("costo") ||
     message.includes("quanto")
   ) {
-    return knowledge.prezzi || "Non ho informazioni sui prezzi.";
+    return knowledge.prezzi || "Non ho ancora informazioni sui prezzi dell'officina.";
   }
 
   if (
@@ -36,7 +38,7 @@ function askLocalKnowledge(userMessage) {
     message.includes("cosa fate") ||
     message.includes("servizi")
   ) {
-    return knowledge.azienda || "Non ho informazioni sull'azienda.";
+    return knowledge.azienda || "Non ho ancora informazioni configurate sull'officina.";
   }
 
   if (
@@ -45,10 +47,10 @@ function askLocalKnowledge(userMessage) {
     message.includes("buonasera") ||
     message.includes("salve")
   ) {
-    return "Ciao! Posso aiutarti con informazioni su azienda, orari e prezzi.";
+    return "Ciao! Posso raccogliere una richiesta di assistenza. Scrivi “richiesta officina” per iniziare.";
   }
 
-  return "Al momento posso rispondere solo usando le informazioni disponibili su azienda, orari e prezzi.";
+  return "Posso raccogliere una richiesta di assistenza. Scrivi “richiesta officina” per iniziare; per altre informazioni contatta direttamente l'officina.";
 }
 
 function buildContext() {
@@ -60,7 +62,6 @@ ${Object.values(knowledge).join("\n")}
 
 async function askAI(userMessage) {
   if (!client) {
-    console.log("OPENAI_API_KEY non presente, uso fallback locale.");
     return askLocalKnowledge(userMessage);
   }
 
@@ -96,18 +97,14 @@ Regole:
 
     const reply = response.choices[0].message.content;
 
-    console.log("AI input:", userMessage);
-    console.log("AI output:", reply);
-
-    return reply;
+    return typeof reply === "string" && reply.trim()
+      ? reply.trim()
+      : askLocalKnowledge(userMessage);
   } catch (err) {
-    console.error(
-      "Errore OpenAI, uso fallback locale:",
-      err.code || err.message || err,
-    );
+    console.error("Errore OpenAI, uso fallback locale:", err.code || "unknown");
 
     return askLocalKnowledge(userMessage);
   }
 }
 
-module.exports = { askAI };
+module.exports = { askAI, askLocalKnowledge };

@@ -14,6 +14,7 @@ async function sendMessage(to, text) {
         Authorization: `Bearer ${config.token}`,
         "Content-Type": "application/json",
       },
+      timeout: 10000,
     },
   );
 }

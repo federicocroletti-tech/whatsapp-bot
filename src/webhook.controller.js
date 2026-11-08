@@ -1,54 +1,64 @@
-const config = require("./config");
-const { sendMessage } = require("./whatsapp.service");
-const { askAI } = require("./ai.service");
+const { timingSafeEqual } = require("node:crypto");
+const { verifyWebhookSignature } = require("./webhook-signature");
 
-function verify(req, res) {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+function createWebhookHandlers({ config, processIncomingMessage }) {
+  function verify(req, res) {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+    const expectedToken = Buffer.from(config.verifyToken);
+    const receivedToken = typeof token === "string" ? Buffer.from(token) : Buffer.alloc(0);
 
-  if (mode === "subscribe" && token === config.verifyToken) {
-    return res.status(200).send(challenge);
+    if (
+      mode === "subscribe" &&
+      typeof challenge === "string" &&
+      receivedToken.length === expectedToken.length &&
+      timingSafeEqual(receivedToken, expectedToken)
+    ) {
+      return res.status(200).send(challenge);
+    }
+
+    return res.sendStatus(403);
   }
 
-  return res.sendStatus(403);
-}
-
-async function handleMessage(req, res) {
-  try {
-    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-
-    if (!message) {
-      return res.sendStatus(200);
+  async function handleMessage(req, res) {
+    if (
+      !verifyWebhookSignature(req.rawBody, req.get("x-hub-signature-256"), config.appSecret)
+    ) {
+      return res.sendStatus(401);
     }
 
-    const from = message.from;
-    const text = message.text?.body;
+    try {
+      const messages = (Array.isArray(req.body.entry) ? req.body.entry : []).flatMap((entry) =>
+        (Array.isArray(entry.changes) ? entry.changes : []).flatMap((change) =>
+          Array.isArray(change.value?.messages) ? change.value.messages : [],
+        ),
+      );
 
-    console.log("IN:", from, text);
+      for (const message of messages) {
+        const senderId = message.from ?? message.from_user_id;
+        if (typeof senderId !== "string" || typeof message.id !== "string") continue;
+        if (config.allowedNumbers.length > 0 && !config.allowedNumbers.includes(senderId)) continue;
+        const sourceTimestamp = Number(message.timestamp);
+        if (!Number.isSafeInteger(sourceTimestamp) || sourceTimestamp <= 0) continue;
 
-    if (!text) {
+        const text = message.type === "text" ? message.text?.body : null;
+        await processIncomingMessage({
+          messageId: message.id,
+          senderId,
+          text: typeof text === "string" ? text : null,
+          sourceTimestamp,
+        });
+      }
+
       return res.sendStatus(200);
+    } catch (error) {
+      console.error("Errore webhook WhatsApp:", error.code || "unknown");
+      return res.sendStatus(500);
     }
-
-    if (!config.allowedNumbers.includes(from)) {
-      console.log("Numero non autorizzato:", from);
-      return res.sendStatus(200);
-    }
-
-    const reply = await askAI(text);
-
-    await sendMessage(from, reply);
-
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error(
-      "Errore webhook WhatsApp:",
-      err.response?.data || err.message || err,
-    );
-
-    return res.sendStatus(500);
   }
+
+  return { verify, handleMessage };
 }
 
-module.exports = { verify, handleMessage };
+module.exports = { createWebhookHandlers };
