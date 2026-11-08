@@ -5,8 +5,16 @@ const config = require("./config");
 const { pool } = require("./database");
 const { createMotoIntakeService } = require("./moto-intake.service");
 const { askAI, askLocalKnowledge } = require("./ai.service");
+const { createOperatorAuth } = require("./operator-auth");
+const { createOperatorHandlers } = require("./operator.controller");
 
 const app = express();
+const operatorAuth = createOperatorAuth({
+  config,
+  pool,
+  isProduction: process.env.NODE_ENV === "production",
+});
+const operatorHandlers = createOperatorHandlers({ pool });
 const { processIncomingMessage } = createMotoIntakeService({
   pool,
   config,
@@ -14,7 +22,14 @@ const { processIncomingMessage } = createMotoIntakeService({
 });
 const { verify, handleMessage } = createWebhookHandlers({ config, processIncomingMessage });
 
-app.use(cors());
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      callback(null, !origin || config.webOrigins.includes(origin));
+    },
+    credentials: true,
+  }),
+);
 app.use(
   express.json({
     limit: "256kb",
@@ -40,6 +55,27 @@ app.get("/health", async (_req, res) => {
 
 app.get("/webhook", verify);
 app.post("/webhook", handleMessage);
+
+app.post("/operator/login", operatorAuth.requireOrigin, operatorAuth.login);
+app.get(
+  "/operator/session",
+  operatorAuth.requireOrigin,
+  operatorAuth.requireSession,
+  operatorAuth.session,
+);
+app.post("/operator/logout", operatorAuth.requireOrigin, operatorAuth.logout);
+app.get(
+  "/operator/requests",
+  operatorAuth.requireOrigin,
+  operatorAuth.requireSession,
+  operatorHandlers.listRequests,
+);
+app.patch(
+  "/operator/requests/:id/status",
+  operatorAuth.requireOrigin,
+  operatorAuth.requireSession,
+  operatorHandlers.updateRequestStatus,
+);
 
 app.post("/chat", async (req, res) => {
   try {

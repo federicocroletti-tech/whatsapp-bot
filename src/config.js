@@ -33,6 +33,45 @@ function getPort(value) {
   return port;
 }
 
+function getAllowedOrigins(value) {
+  const origins = value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  if (
+    origins.length === 0 ||
+    origins.some((origin) => {
+      try {
+        const parsed = new URL(origin);
+        return (
+          parsed.origin !== origin ||
+          !["http:", "https:"].includes(parsed.protocol) ||
+          (parsed.protocol === "http:" && !["localhost", "127.0.0.1"].includes(parsed.hostname))
+        );
+      } catch {
+        return true;
+      }
+    })
+  ) {
+    throw new Error("WEB_ORIGINS deve contenere origini HTTP/HTTPS valide separate da virgola");
+  }
+  return origins;
+}
+
+function getOperatorCredentials() {
+  const username = getRequiredEnv("OPERATOR_USERNAME");
+  const password = getRequiredEnv("OPERATOR_PASSWORD");
+
+  if (password.length < 16) {
+    throw new Error("OPERATOR_PASSWORD deve contenere almeno 16 caratteri");
+  }
+
+  return { username, password };
+}
+
+const operator = getOperatorCredentials();
+
 module.exports = {
   port: getPort(process.env.PORT),
 
@@ -53,4 +92,8 @@ module.exports = {
   privacyUrl: getRequiredEnv("PRIVACY_URL"),
 
   requestRetentionDays: getRetentionDays(process.env.REQUEST_RETENTION_DAYS),
+
+  webOrigins: getAllowedOrigins(getRequiredEnv("WEB_ORIGINS")),
+
+  operator,
 };

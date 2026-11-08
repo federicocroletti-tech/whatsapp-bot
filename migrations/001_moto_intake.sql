@@ -51,3 +51,13 @@ CREATE TABLE IF NOT EXISTS message_outbox (
 CREATE INDEX IF NOT EXISTS message_outbox_pending_idx
   ON message_outbox (next_attempt_at, created_at)
   WHERE status IN ('pending', 'sending');
+
+CREATE TABLE IF NOT EXISTS operator_sessions (
+  token_hash CHAR(64) PRIMARY KEY,
+  username TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS operator_sessions_expires_at_idx
+  ON operator_sessions (expires_at);

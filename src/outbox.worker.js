@@ -62,6 +62,7 @@ async function cleanRetainedData() {
      WHERE status IN ('sent', 'failed', 'expired')
        AND created_at <= NOW() - INTERVAL '30 days'`,
   );
+  await pool.query("DELETE FROM operator_sessions WHERE expires_at <= NOW()");
   lastCleanupAt = now;
 }
 

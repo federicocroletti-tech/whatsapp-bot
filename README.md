@@ -10,6 +10,10 @@ promozioni e non contatta utenti che non hanno avviato la conversazione.
   messaggio.
 - Raccolta guidata e con consenso di nome, moto, problema e disponibilità.
 - Richieste e stato della conversazione conservati in PostgreSQL.
+- Inbox operatore protetta: login, sessioni casuali revocabili archiviate in
+  PostgreSQL (nel database viene salvato solo l'hash), lista/filtri e cambio
+  stato della richiesta. L'API è accessibile solo dalle origini
+  configurate in `WEB_ORIGINS`.
 - Coda outbox con retry per le risposte WhatsApp; gli invii sono risposte a
   conversazioni avviate dal cliente e soggetti alla finestra di assistenza Meta.
 - Le risposte ai webhook WhatsApp usano solo la knowledge locale: i messaggi
@@ -25,7 +29,7 @@ promozioni e non contatta utenti che non hanno avviato la conversazione.
   altri vengono ignorati. In produzione, ometterlo per ricevere richieste
   iniziate dai clienti.
 
-La fase MVP salva le pratiche ma non implementa una inbox operatore o avvisi
+La fase MVP salva le pratiche e offre una inbox operatore; non invia avvisi
 all'officina. Il testo “richiesta ricevuta” non equivale a conferma o
 accettazione dell'intervento.
 
@@ -40,9 +44,13 @@ npm ci
 
 Configura nel `.env` valori di test Meta e un database PostgreSQL locale.
 `APP_SECRET`, `TOKEN`, `PHONE_NUMBER_ID`, `VERIFY_TOKEN`, `DATABASE_URL`,
-`WORKSHOP_NAME` e `PRIVACY_URL` sono necessari per avviare il server. Non
-committare mai `.env` o credenziali reali. Per testare il flusso senza Meta o
-database, esegui `npm test`.
+`WORKSHOP_NAME`, `PRIVACY_URL`, `WEB_ORIGINS`, `OPERATOR_USERNAME`,
+`OPERATOR_PASSWORD` sono necessari per avviare il server. La password operatore
+deve avere almeno 16 caratteri. In produzione, `WEB_ORIGINS` deve contenere
+l'origine HTTPS esatta della inbox (senza path o slash finale). Genera credenziali casuali e
+configurale nel secret manager del provider, mai nel repository. Non committare
+mai `.env` o credenziali reali. Per testare i flussi senza Meta o database,
+esegui `npm test`.
 
 Applica esplicitamente lo schema prima di avviare il server:
 
@@ -53,6 +61,17 @@ npm start
 
 `GET /health` controlla la connessione PostgreSQL. Il webhook Meta usa
 `GET /webhook` per la verifica e `POST /webhook` per gli eventi.
+
+L'interfaccia operatore usa `POST /operator/login`, `GET /operator/session`,
+`POST /operator/logout`, `GET /operator/requests?status=all|received|in_review|closed`
+e `PATCH /operator/requests/:id/status`. La sessione dura otto ore e usa un
+token casuale; il cookie è HttpOnly, SameSite=Strict, Secure in produzione e
+non viene persistito nel browser. La sessione viene verificata
+su PostgreSQL per ogni rotta protetta e revocata alla disconnessione; le
+sessioni scadute vengono ripulite dal worker. Sono accettate solo richieste
+browser con Origin configurata. Dopo 10 login errati sullo stesso username, i
+tentativi vengono limitati per 15 minuti (contatore in memoria, azzerato al
+riavvio).
 
 ## Dati e privacy
 
@@ -78,12 +97,13 @@ non esporre `DATABASE_URL` o token nel frontend.
 Prima di attivare il webhook:
 
 1. provisionare PostgreSQL e configurare le variabili d'ambiente del backend;
-2. impostare `PRIVACY_URL` su un'informativa effettiva e `WORKSHOP_NAME` sul
-   nome corretto dell'officina;
-3. eseguire `npm run migrate` con `DATABASE_URL`;
-4. verificare in Meta App Dashboard la callback HTTPS e i campi webhook
+2. impostare `PRIVACY_URL` su un'informativa effettiva, `WORKSHOP_NAME` sul
+   nome corretto dell'officina e `WEB_ORIGINS` sull'origine HTTPS della inbox;
+3. impostare username/password operatore robusti nel secret manager del provider;
+4. eseguire `npm run migrate` con `DATABASE_URL`;
+5. verificare in Meta App Dashboard la callback HTTPS e i campi webhook
    `messages`, configurando il verify token e app secret;
-5. configurare `TOKEN`, `PHONE_NUMBER_ID` e una versione Graph API supportata
+6. configurare `TOKEN`, `PHONE_NUMBER_ID` e una versione Graph API supportata
    dalla propria app.
 
 Il repository non include un `DATABASE_URL`, token Meta o configurazione di
