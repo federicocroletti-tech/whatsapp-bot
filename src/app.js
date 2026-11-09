@@ -7,6 +7,7 @@ const { createMotoIntakeService } = require("./moto-intake.service");
 const { askAI, askLocalKnowledge } = require("./ai.service");
 const { createOperatorAuth } = require("./operator-auth");
 const { createOperatorHandlers } = require("./operator.controller");
+const { createTenantHandlers } = require("./tenant.controller");
 
 const app = express();
 const operatorAuth = createOperatorAuth({
@@ -17,10 +18,22 @@ const operatorAuth = createOperatorAuth({
 const operatorHandlers = createOperatorHandlers({ pool });
 const { processIncomingMessage } = createMotoIntakeService({
   pool,
-  config,
   askLocalKnowledge,
 });
-const { verify, handleMessage } = createWebhookHandlers({ config, processIncomingMessage });
+const tenantHandlers = createTenantHandlers({ pool, config });
+const { verify, handleMessage } = createWebhookHandlers({
+  config,
+  processIncomingMessage,
+  resolveTenant: async (phoneNumberId) => {
+    const result = await pool.query(
+      `SELECT id, display_name, privacy_url, knowledge
+       FROM tenants
+       WHERE wa_phone_number_id = $1 AND status = 'active'`,
+      [phoneNumberId],
+    );
+    return result.rows[0] ?? null;
+  },
+});
 
 app.use(
   cors({
@@ -56,22 +69,37 @@ app.get("/health", async (_req, res) => {
 app.get("/webhook", verify);
 app.post("/webhook", handleMessage);
 
-app.post("/operator/login", operatorAuth.requireOrigin, operatorAuth.login);
+app.get("/public/tenants/:tenantSlug", tenantHandlers.getPublicTenant);
+app.post(
+  "/platform/tenants",
+  tenantHandlers.requirePlatformAdmin,
+  tenantHandlers.createTenant,
+);
+
+app.post(
+  "/operator/:tenantSlug/login",
+  operatorAuth.requireOrigin,
+  operatorAuth.login,
+);
 app.get(
-  "/operator/session",
+  "/operator/:tenantSlug/session",
   operatorAuth.requireOrigin,
   operatorAuth.requireSession,
   operatorAuth.session,
 );
-app.post("/operator/logout", operatorAuth.requireOrigin, operatorAuth.logout);
+app.post(
+  "/operator/:tenantSlug/logout",
+  operatorAuth.requireOrigin,
+  operatorAuth.logout,
+);
 app.get(
-  "/operator/requests",
+  "/operator/:tenantSlug/requests",
   operatorAuth.requireOrigin,
   operatorAuth.requireSession,
   operatorHandlers.listRequests,
 );
 app.patch(
-  "/operator/requests/:id/status",
+  "/operator/:tenantSlug/requests/:id/status",
   operatorAuth.requireOrigin,
   operatorAuth.requireSession,
   operatorHandlers.updateRequestStatus,
@@ -81,7 +109,11 @@ app.post("/chat", async (req, res) => {
   try {
     const message = req.body.message;
 
-    if (typeof message !== "string" || !message.trim() || message.length > 2000) {
+    if (
+      typeof message !== "string" ||
+      !message.trim() ||
+      message.length > 2000
+    ) {
       return res.status(400).json({
         error: "Il campo message deve contenere da 1 a 2000 caratteri",
       });

@@ -1,9 +1,8 @@
 const axios = require("axios");
-const config = require("./config");
 
-async function sendMessage(to, text) {
+async function sendMessage(phoneNumberId, accessToken, to, text) {
   await axios.post(
-    `https://graph.facebook.com/v25.0/${config.phoneNumberId}/messages`,
+    `https://graph.facebook.com/v25.0/${phoneNumberId}/messages`,
     {
       messaging_product: "whatsapp",
       to,
@@ -11,7 +10,7 @@ async function sendMessage(to, text) {
     },
     {
       headers: {
-        Authorization: `Bearer ${config.token}`,
+        Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       timeout: 10000,

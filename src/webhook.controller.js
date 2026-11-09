@@ -1,13 +1,18 @@
 const { timingSafeEqual } = require("node:crypto");
 const { verifyWebhookSignature } = require("./webhook-signature");
 
-function createWebhookHandlers({ config, processIncomingMessage }) {
+function createWebhookHandlers({
+  config,
+  processIncomingMessage,
+  resolveTenant,
+}) {
   function verify(req, res) {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
     const expectedToken = Buffer.from(config.verifyToken);
-    const receivedToken = typeof token === "string" ? Buffer.from(token) : Buffer.alloc(0);
+    const receivedToken =
+      typeof token === "string" ? Buffer.from(token) : Buffer.alloc(0);
 
     if (
       mode === "subscribe" &&
@@ -23,32 +28,56 @@ function createWebhookHandlers({ config, processIncomingMessage }) {
 
   async function handleMessage(req, res) {
     if (
-      !verifyWebhookSignature(req.rawBody, req.get("x-hub-signature-256"), config.appSecret)
+      !verifyWebhookSignature(
+        req.rawBody,
+        req.get("x-hub-signature-256"),
+        config.appSecret,
+      )
     ) {
       return res.sendStatus(401);
     }
 
     try {
-      const messages = (Array.isArray(req.body.entry) ? req.body.entry : []).flatMap((entry) =>
-        (Array.isArray(entry.changes) ? entry.changes : []).flatMap((change) =>
-          Array.isArray(change.value?.messages) ? change.value.messages : [],
-        ),
-      );
+      for (const entry of Array.isArray(req.body.entry) ? req.body.entry : []) {
+        for (const change of Array.isArray(entry.changes)
+          ? entry.changes
+          : []) {
+          const value = change.value;
+          const phoneNumberId = value?.metadata?.phone_number_id;
+          if (typeof phoneNumberId !== "string") continue;
 
-      for (const message of messages) {
-        const senderId = message.from ?? message.from_user_id;
-        if (typeof senderId !== "string" || typeof message.id !== "string") continue;
-        if (config.allowedNumbers.length > 0 && !config.allowedNumbers.includes(senderId)) continue;
-        const sourceTimestamp = Number(message.timestamp);
-        if (!Number.isSafeInteger(sourceTimestamp) || sourceTimestamp <= 0) continue;
+          const tenant = await resolveTenant(phoneNumberId);
+          if (!tenant) {
+            console.warn("Evento WhatsApp senza tenant attivo:", phoneNumberId);
+            continue;
+          }
 
-        const text = message.type === "text" ? message.text?.body : null;
-        await processIncomingMessage({
-          messageId: message.id,
-          senderId,
-          text: typeof text === "string" ? text : null,
-          sourceTimestamp,
-        });
+          for (const message of Array.isArray(value.messages)
+            ? value.messages
+            : []) {
+            const senderId = message.from ?? message.from_user_id;
+            if (typeof senderId !== "string" || typeof message.id !== "string")
+              continue;
+            if (
+              config.allowedNumbers.length > 0 &&
+              !config.allowedNumbers.includes(senderId)
+            ) {
+              continue;
+            }
+            const sourceTimestamp = Number(message.timestamp);
+            if (!Number.isSafeInteger(sourceTimestamp) || sourceTimestamp <= 0)
+              continue;
+
+            const text = message.type === "text" ? message.text?.body : null;
+            await processIncomingMessage({
+              messageId: message.id,
+              senderId,
+              text: typeof text === "string" ? text : null,
+              sourceTimestamp,
+              tenant,
+            });
+          }
+        }
       }
 
       return res.sendStatus(200);

@@ -4,21 +4,19 @@ const { once } = require("node:events");
 const { createHash } = require("node:crypto");
 
 Object.assign(process.env, {
-  TOKEN: "test-token",
   APP_SECRET: "test-app-secret",
-  PHONE_NUMBER_ID: "test-phone-number-id",
   VERIFY_TOKEN: "test-verify-token",
-  DATABASE_URL: "postgresql://test:test@127.0.0.1:1/test",
-  WORKSHOP_NAME: "Officina Test",
-  PRIVACY_URL: "https://example.test/privacy",
+  DATABASE_URL: "postgres://test:test@127.0.0.1:1/test",
   WEB_ORIGINS: "http://localhost:4200",
-  OPERATOR_USERNAME: "operator",
-  OPERATOR_PASSWORD: "a-strong-password-for-tests",
+  PLATFORM_ADMIN_TOKEN: "test-platform-admin-token-that-is-long-enough",
+  TENANT_CREDENTIAL_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
 });
 delete process.env.OPENAI_API_KEY;
 
 const app = require("./app");
 const { pool } = require("./database");
+const { hashOperatorPassword } = require("./operator-password");
+const operatorPassword = "a-strong-password-for-tests";
 
 test("chat endpoint validates input and uses the configured local fallback", async (t) => {
   const server = app.listen(0, "127.0.0.1");
@@ -46,23 +44,48 @@ test("chat endpoint validates input and uses the configured local fallback", asy
   assert.match((await valid.json()).reply, /richiesta di assistenza/);
 });
 
-test("operator routes enforce origin checks and HttpOnly login sessions", async (t) => {
+test("operator routes enforce origin checks and tenant-scoped HttpOnly sessions", async (t) => {
   const sessions = new Map();
+  const passwordHash = await hashOperatorPassword(operatorPassword);
   const originalQuery = pool.query;
   pool.query = async (sql, values) => {
-    if (sql.includes("INSERT INTO operator_sessions")) {
-      sessions.set(values[0], { username: values[1], expiresAt: values[2] });
-      return { rowCount: 1, rows: [] };
-    }
-    if (sql.includes("SELECT username") && sql.includes("operator_sessions")) {
-      const session = sessions.get(values[0]);
-      return session && session.username === values[1] && session.expiresAt > new Date()
-        ? { rowCount: 1, rows: [{ username: session.username }] }
+    if (sql.includes("SELECT operator.id")) {
+      return values[1] === "operator"
+        ? {
+            rowCount: 1,
+            rows: [
+              {
+                id: "11",
+                tenant_id: "tenant-a",
+                username: "operator",
+                password_hash: passwordHash,
+                role: "owner",
+              },
+            ],
+          }
         : { rowCount: 0, rows: [] };
     }
-    if (sql.includes("DELETE FROM operator_sessions")) {
+    if (sql.includes("INSERT INTO tenant_operator_sessions")) {
+      sessions.set(values[0], { tenantId: values[1], expiresAt: values[3] });
+      return { rowCount: 1, rows: [] };
+    }
+    if (sql.includes("DELETE FROM tenant_operator_sessions")) {
       sessions.delete(values[0]);
       return { rowCount: 1, rows: [] };
+    }
+    if (sql.includes("FROM tenant_operator_sessions")) {
+      const session = sessions.get(values[0]);
+      return session &&
+        session.tenantId === "tenant-a" &&
+        values[1] === "workshop-a" &&
+        session.expiresAt > new Date()
+        ? {
+            rowCount: 1,
+            rows: [
+              { username: "operator", role: "owner", tenant_id: "tenant-a" },
+            ],
+          }
+        : { rowCount: 0, rows: [] };
     }
     throw new Error(`Unexpected SQL in operator route test: ${sql}`);
   };
@@ -78,12 +101,15 @@ test("operator routes enforce origin checks and HttpOnly login sessions", async 
     );
   });
 
-  const baseUrl = `http://127.0.0.1:${server.address().port}/operator`;
+  const baseUrl = `http://127.0.0.1:${server.address().port}/operator/workshop-a`;
   const origin = "http://localhost:4200";
   const rejected = await fetch(`${baseUrl}/login`, {
     method: "POST",
-    headers: { "content-type": "application/json", origin: "https://not-allowed.example" },
-    body: JSON.stringify({ username: "operator", password: "a-strong-password-for-tests" }),
+    headers: {
+      "content-type": "application/json",
+      origin: "https://not-allowed.example",
+    },
+    body: JSON.stringify({ username: "operator", password: operatorPassword }),
   });
   assert.equal(rejected.status, 403);
 
@@ -95,19 +121,26 @@ test("operator routes enforce origin checks and HttpOnly login sessions", async 
   const login = await fetch(`${baseUrl}/login`, {
     method: "POST",
     headers: { "content-type": "application/json", origin },
-    body: JSON.stringify({ username: "operator", password: "a-strong-password-for-tests" }),
+    body: JSON.stringify({ username: "operator", password: operatorPassword }),
   });
   assert.equal(login.status, 200);
   const cookie = login.headers.get("set-cookie").split(";")[0];
   assert.equal(sessions.size, 1);
-  assert.equal([...sessions.keys()][0], createHash("sha256").update(cookie.split("=")[1]).digest("hex"));
+  assert.equal(
+    [...sessions.keys()][0],
+    createHash("sha256").update(cookie.split("=")[1]).digest("hex"),
+  );
   assert.match(login.headers.get("set-cookie"), /HttpOnly/);
+  assert.match(login.headers.get("set-cookie"), /Path=\/operator\/workshop-a/);
 
   const session = await fetch(`${baseUrl}/session`, {
     headers: { origin, cookie },
   });
   assert.equal(session.status, 200);
-  assert.deepEqual(await session.json(), { username: "operator" });
+  assert.deepEqual(await session.json(), {
+    username: "operator",
+    role: "owner",
+  });
 
   const logout = await fetch(`${baseUrl}/logout`, {
     method: "POST",

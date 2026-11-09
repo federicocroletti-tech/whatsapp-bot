@@ -9,8 +9,9 @@ const client = process.env.OPENAI_API_KEY
     })
   : null;
 
-function askLocalKnowledge(userMessage) {
+function askLocalKnowledge(userMessage, tenantKnowledge = knowledge) {
   const message = userMessage.toLowerCase();
+  const configuredKnowledge = tenantKnowledge || {};
 
   if (
     message.includes("orari") ||
@@ -19,7 +20,10 @@ function askLocalKnowledge(userMessage) {
     message.includes("chiusi") ||
     message.includes("chiusura")
   ) {
-    return knowledge.orari || "Non ho ancora informazioni sugli orari dell'officina.";
+    return (
+      configuredKnowledge.orari ||
+      "Non ho ancora informazioni sugli orari dell'officina."
+    );
   }
 
   if (
@@ -29,7 +33,10 @@ function askLocalKnowledge(userMessage) {
     message.includes("costo") ||
     message.includes("quanto")
   ) {
-    return knowledge.prezzi || "Non ho ancora informazioni sui prezzi dell'officina.";
+    return (
+      configuredKnowledge.prezzi ||
+      "Non ho ancora informazioni sui prezzi dell'officina."
+    );
   }
 
   if (
@@ -38,7 +45,10 @@ function askLocalKnowledge(userMessage) {
     message.includes("cosa fate") ||
     message.includes("servizi")
   ) {
-    return knowledge.azienda || "Non ho ancora informazioni configurate sull'officina.";
+    return (
+      configuredKnowledge.azienda ||
+      "Non ho ancora informazioni configurate sull'officina."
+    );
   }
 
   if (

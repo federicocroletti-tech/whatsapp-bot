@@ -17,14 +17,6 @@ function parseAllowedNumbers(value) {
     .filter(Boolean);
 }
 
-function getRetentionDays(value) {
-  const days = Number(value || 30);
-  if (!Number.isInteger(days) || days < 1 || days > 3650) {
-    throw new Error("REQUEST_RETENTION_DAYS deve essere un intero tra 1 e 3650");
-  }
-  return days;
-}
-
 function getPort(value) {
   const port = Number(value || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -47,53 +39,48 @@ function getAllowedOrigins(value) {
         return (
           parsed.origin !== origin ||
           !["http:", "https:"].includes(parsed.protocol) ||
-          (parsed.protocol === "http:" && !["localhost", "127.0.0.1"].includes(parsed.hostname))
+          (parsed.protocol === "http:" &&
+            !["localhost", "127.0.0.1"].includes(parsed.hostname))
         );
       } catch {
         return true;
       }
     })
   ) {
-    throw new Error("WEB_ORIGINS deve contenere origini HTTP/HTTPS valide separate da virgola");
+    throw new Error(
+      "WEB_ORIGINS deve contenere origini HTTP/HTTPS valide separate da virgola",
+    );
   }
   return origins;
 }
 
-function getOperatorCredentials() {
-  const username = getRequiredEnv("OPERATOR_USERNAME");
-  const password = getRequiredEnv("OPERATOR_PASSWORD");
-
-  if (password.length < 16) {
-    throw new Error("OPERATOR_PASSWORD deve contenere almeno 16 caratteri");
+function getEncryptionKey(value) {
+  const key = Buffer.from(value, "base64");
+  if (key.length !== 32) {
+    throw new Error(
+      "TENANT_CREDENTIAL_ENCRYPTION_KEY deve essere una chiave Base64 di 32 byte",
+    );
   }
-
-  return { username, password };
+  return key;
 }
 
-const operator = getOperatorCredentials();
+function getPlatformAdminToken() {
+  const token = getRequiredEnv("PLATFORM_ADMIN_TOKEN");
+  if (token.length < 32) {
+    throw new Error("PLATFORM_ADMIN_TOKEN deve contenere almeno 32 caratteri");
+  }
+  return token;
+}
 
 module.exports = {
   port: getPort(process.env.PORT),
-
-  token: getRequiredEnv("TOKEN"),
-
   appSecret: getRequiredEnv("APP_SECRET"),
-
-  phoneNumberId: getRequiredEnv("PHONE_NUMBER_ID"),
-
   verifyToken: getRequiredEnv("VERIFY_TOKEN"),
-
   databaseUrl: getRequiredEnv("DATABASE_URL"),
-
   allowedNumbers: parseAllowedNumbers(process.env.ALLOWED_NUMBERS || ""),
-
-  workshopName: getRequiredEnv("WORKSHOP_NAME"),
-
-  privacyUrl: getRequiredEnv("PRIVACY_URL"),
-
-  requestRetentionDays: getRetentionDays(process.env.REQUEST_RETENTION_DAYS),
-
   webOrigins: getAllowedOrigins(getRequiredEnv("WEB_ORIGINS")),
-
-  operator,
+  tenantCredentialEncryptionKey: getEncryptionKey(
+    getRequiredEnv("TENANT_CREDENTIAL_ENCRYPTION_KEY"),
+  ),
+  platformAdminToken: getPlatformAdminToken(),
 };
