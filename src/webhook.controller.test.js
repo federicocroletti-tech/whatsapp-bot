@@ -8,6 +8,21 @@ const config = {
   verifyToken: "verify-token",
   allowedNumbers: [],
 };
+const tenant = {
+  id: "tenant-a",
+  display_name: "Officina Test",
+  privacy_url: "https://example.test/privacy",
+  knowledge: {},
+};
+
+function createHandlers(processIncomingMessage = async () => {}) {
+  return createWebhookHandlers({
+    config,
+    processIncomingMessage,
+    resolveTenant: async (phoneNumberId) =>
+      phoneNumberId === "phone-a" ? tenant : null,
+  });
+}
 
 function createResponse() {
   return {
@@ -37,16 +52,15 @@ function signedRequest(body, signatureOverride) {
     body,
     rawBody,
     get(name) {
-      return name.toLowerCase() === "x-hub-signature-256" ? signature : undefined;
+      return name.toLowerCase() === "x-hub-signature-256"
+        ? signature
+        : undefined;
     },
   };
 }
 
 test("verifies the Meta webhook challenge and rejects incorrect tokens", () => {
-  const { verify } = createWebhookHandlers({
-    config,
-    processIncomingMessage: async () => {},
-  });
+  const { verify } = createHandlers();
   const valid = createResponse();
   verify(
     {
@@ -77,11 +91,8 @@ test("verifies the Meta webhook challenge and rejects incorrect tokens", () => {
 
 test("rejects requests with an invalid Meta signature without processing messages", async () => {
   let processed = false;
-  const { handleMessage } = createWebhookHandlers({
-    config,
-    processIncomingMessage: async () => {
-      processed = true;
-    },
+  const { handleMessage } = createHandlers(async () => {
+    processed = true;
   });
   const response = createResponse();
   await handleMessage(
@@ -94,16 +105,16 @@ test("rejects requests with an invalid Meta signature without processing message
 
 test("processes text messages, business-scoped sender IDs, and ignores status-only events", async () => {
   const received = [];
-  const { handleMessage } = createWebhookHandlers({
-    config,
-    processIncomingMessage: async (message) => received.push(message),
-  });
+  const { handleMessage } = createHandlers(async (message) =>
+    received.push(message),
+  );
   const body = {
     entry: [
       {
         changes: [
           {
             value: {
+              metadata: { phone_number_id: "phone-a" },
               messages: [
                 {
                   id: "wamid.1",
@@ -112,7 +123,12 @@ test("processes text messages, business-scoped sender IDs, and ignores status-on
                   type: "text",
                   text: { body: "tagliando" },
                 },
-                { id: "wamid.2", from_user_id: "bsuid.2", timestamp: "1762560001", type: "image" },
+                {
+                  id: "wamid.2",
+                  from_user_id: "bsuid.2",
+                  timestamp: "1762560001",
+                  type: "image",
+                },
               ],
               statuses: [{ id: "wamid.sent", status: "delivered" }],
             },
@@ -126,8 +142,20 @@ test("processes text messages, business-scoped sender IDs, and ignores status-on
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(received, [
-    { messageId: "wamid.1", senderId: "123", text: "tagliando", sourceTimestamp: 1762560000 },
-    { messageId: "wamid.2", senderId: "bsuid.2", text: null, sourceTimestamp: 1762560001 },
+    {
+      messageId: "wamid.1",
+      senderId: "123",
+      text: "tagliando",
+      sourceTimestamp: 1762560000,
+      tenant,
+    },
+    {
+      messageId: "wamid.2",
+      senderId: "bsuid.2",
+      text: null,
+      sourceTimestamp: 1762560001,
+      tenant,
+    },
   ]);
 });
 
@@ -136,6 +164,7 @@ test("enforces the configured sender allowlist", async () => {
   const { handleMessage } = createWebhookHandlers({
     config: { ...config, allowedNumbers: ["trusted-sender"] },
     processIncomingMessage: async (message) => received.push(message),
+    resolveTenant: async () => tenant,
   });
   const response = createResponse();
   await handleMessage(
@@ -145,6 +174,7 @@ test("enforces the configured sender allowlist", async () => {
           changes: [
             {
               value: {
+                metadata: { phone_number_id: "phone-a" },
                 messages: [
                   {
                     id: "wamid.untrusted",
@@ -166,12 +196,56 @@ test("enforces the configured sender allowlist", async () => {
   assert.deepEqual(received, []);
 });
 
-test("ignores messages without a usable Meta event timestamp", async () => {
-  const received = [];
+test("does not route webhook messages for an unconfigured WhatsApp number", async () => {
+  let processed = false;
   const { handleMessage } = createWebhookHandlers({
     config,
-    processIncomingMessage: async (message) => received.push(message),
+    processIncomingMessage: async () => {
+      processed = true;
+    },
+    resolveTenant: async () => null,
   });
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const response = createResponse();
+    await handleMessage(
+      signedRequest({
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  metadata: { phone_number_id: "unconfigured-phone" },
+                  messages: [
+                    {
+                      id: "wamid.unknown-tenant",
+                      from: "sender",
+                      timestamp: "1762560000",
+                      type: "text",
+                      text: { body: "tagliando" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+      response,
+    );
+    assert.equal(response.statusCode, 200);
+    assert.equal(processed, false);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test("ignores messages without a usable Meta event timestamp", async () => {
+  const received = [];
+  const { handleMessage } = createHandlers(async (message) =>
+    received.push(message),
+  );
   const response = createResponse();
   await handleMessage(
     signedRequest({
@@ -180,6 +254,7 @@ test("ignores messages without a usable Meta event timestamp", async () => {
           changes: [
             {
               value: {
+                metadata: { phone_number_id: "phone-a" },
                 messages: [
                   {
                     id: "wamid.no-timestamp",

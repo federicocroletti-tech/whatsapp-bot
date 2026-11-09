@@ -1,37 +1,33 @@
-# WhatsApp Bot — Moto Smart intake prototype
+# WhatsApp Bot — piattaforma Moto Smart
 
-Backend Node.js/Express per un flusso WhatsApp Business Platform che raccoglie
-richieste di assistenza motocicli. Non conferma appuntamenti, non invia
-promozioni e non contatta utenti che non hanno avviato la conversazione.
+Backend Node.js/Express per una piattaforma multi-tenant collegata alla WhatsApp
+Business Platform tramite una Meta App centrale. Ogni officina ha il proprio
+numero WhatsApp Business, credenziali, richieste, configurazione, informativa,
+contenuti e branding. Il webhook condiviso instrada gli eventi in base al
+`phone_number_id` comunicato da Meta.
+
+Il flusso raccoglie richieste di assistenza con consenso esplicito, non conferma
+appuntamenti e non invia promozioni o messaggi avviati dall'azienda.
 
 ## Funzioni
 
-- Webhook Meta con verifica HMAC-SHA256 della firma e deduplicazione degli ID
-  messaggio.
-- Raccolta guidata e con consenso di nome, moto, problema e disponibilità.
-- Richieste e stato della conversazione conservati in PostgreSQL.
-- Inbox operatore protetta: login, sessioni casuali revocabili archiviate in
-  PostgreSQL (nel database viene salvato solo l'hash), lista/filtri e cambio
-  stato della richiesta. L'API è accessibile solo dalle origini
-  configurate in `WEB_ORIGINS`.
-- Coda outbox con retry per le risposte WhatsApp; gli invii sono risposte a
-  conversazioni avviate dal cliente e soggetti alla finestra di assistenza Meta.
-- Le risposte ai webhook WhatsApp usano solo la knowledge locale: i messaggi
-  WhatsApp non vengono inoltrati a OpenAI. Senza dati officina configurati il
-  bot non inventa orari o prezzi. L'endpoint separato `/chat` può usare OpenAI
-  se `OPENAI_API_KEY` è configurata.
-- Le richieste vengono cancellate dopo 30 giorni per impostazione predefinita
-  (`REQUEST_RETENTION_DAYS`); conversazioni temporanee scadono dopo 24 ore e
-  metadati di webhook/coda dopo 30 giorni.
-- I contenuti dei messaggi e le risposte AI non vengono scritti nei log
-  applicativi.
-- `ALLOWED_NUMBERS` può limitare i mittenti in test; se impostato, tutti gli
-  altri vengono ignorati. In produzione, ometterlo per ricevere richieste
-  iniziate dai clienti.
-
-La fase MVP salva le pratiche e offre una inbox operatore; non invia avvisi
-all'officina. Il testo “richiesta ricevuta” non equivale a conferma o
-accettazione dell'intervento.
+- Firma webhook Meta verificata con HMAC-SHA256 e challenge condivisa.
+- Routing per `phone_number_id`; un numero non configurato o sospeso non viene
+  associato ad alcun tenant.
+- Richieste, conversazioni temporanee, deduplicazione, outbox, sessioni e
+  cancellazione automatica isolate per tenant.
+- Token WhatsApp di ogni officina cifrato nel database con AES-256-GCM; password
+  operatore memorizzate con scrypt; sessioni casuali salvate solo tramite hash.
+- Provisioning iniziale assistito, protetto da un token amministrativo, con
+  primo utente owner, nome legale/visualizzato, palette, logo, informativa,
+  dati di knowledge e retention.
+- Inbox web raggiungibile da `/operator/:tenantSlug`; il frontend carica
+  branding e informativa pubblici e usa sessioni HttpOnly tenant-scoped.
+- Invio WhatsApp tramite il token e il numero del tenant, con coda outbox,
+  retry e scadenza entro la finestra di assistenza Meta.
+- Le risposte WhatsApp usano solo la knowledge locale del tenant: i messaggi
+  non vengono inoltrati a OpenAI. L'endpoint dimostrativo separato `/chat` può
+  usare OpenAI se `OPENAI_API_KEY` è configurata.
 
 ## Configurazione locale
 
@@ -42,74 +38,134 @@ Copy-Item .env.example .env
 npm ci
 ```
 
-Configura nel `.env` valori di test Meta e un database PostgreSQL locale.
-`APP_SECRET`, `TOKEN`, `PHONE_NUMBER_ID`, `VERIFY_TOKEN`, `DATABASE_URL`,
-`WORKSHOP_NAME`, `PRIVACY_URL`, `WEB_ORIGINS`, `OPERATOR_USERNAME`,
-`OPERATOR_PASSWORD` sono necessari per avviare il server. La password operatore
-deve avere almeno 16 caratteri. In produzione, `WEB_ORIGINS` deve contenere
-l'origine HTTPS esatta della inbox (senza path o slash finale). Genera credenziali casuali e
-configurale nel secret manager del provider, mai nel repository. Non committare
-mai `.env` o credenziali reali. Per testare i flussi senza Meta o database,
-esegui `npm test`.
+Configura nel file `.env` i valori di test Meta, PostgreSQL, origini frontend e
+segreti amministrativi. Genera due segreti indipendenti, ad esempio:
 
-Applica esplicitamente lo schema prima di avviare il server:
+```powershell
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+```
+
+Il primo valore va in `PLATFORM_ADMIN_TOKEN`; il secondo in
+`TENANT_CREDENTIAL_ENCRYPTION_KEY` (chiave Base64 da 32 byte). Salvali nel
+secret manager del provider e non nel repository o in chat. La perdita o
+rotazione della chiave di cifratura richiede di ricifrare i token tenant.
+
+`APP_SECRET` e `VERIFY_TOKEN` appartengono alla Meta App centrale;
+`DATABASE_URL` è accessibile solo al backend. In produzione, `WEB_ORIGINS`
+deve contenere l'origine HTTPS esatta della inbox (senza path o slash finale).
+`ALLOWED_NUMBERS` è solo un filtro opzionale per i test e va lasciato vuoto
+quando si ricevono richieste reali.
+
+Applica lo schema e avvia il server:
 
 ```powershell
 npm run migrate
 npm start
 ```
 
-`GET /health` controlla la connessione PostgreSQL. Il webhook Meta usa
-`GET /webhook` per la verifica e `POST /webhook` per gli eventi.
+Il comando di migrazione applica in ordine i file SQL versionati. La migrazione
+multi-tenant è additiva: le vecchie tabelle single-tenant vengono lasciate
+intatte e non lette dal nuovo codice. Non viene eseguita una migrazione
+automatica di richieste legacy perché non è possibile assegnarle con certezza a
+un'officina.
 
-L'interfaccia operatore usa `POST /operator/login`, `GET /operator/session`,
-`POST /operator/logout`, `GET /operator/requests?status=all|received|in_review|closed`
-e `PATCH /operator/requests/:id/status`. La sessione dura otto ore e usa un
-token casuale; il cookie è HttpOnly, SameSite=Strict, Secure in produzione e
-non viene persistito nel browser. La sessione viene verificata
-su PostgreSQL per ogni rotta protetta e revocata alla disconnessione; le
-sessioni scadute vengono ripulite dal worker. Sono accettate solo richieste
-browser con Origin configurata. Dopo 10 login errati sullo stesso username, i
-tentativi vengono limitati per 15 minuti (contatore in memoria, azzerato al
-riavvio).
+## Onboarding iniziale di un'officina
 
-## Dati e privacy
+Con la Meta App centrale, l'amministratore collega manualmente la WABA del
+cliente e registra il numero tramite l'endpoint amministrativo. Usa un token
+server-side di lunga durata con i permessi minimi richiesti dalla WhatsApp
+Business Platform e dalla configurazione Meta App; verifica business, accessi
+e App Review richiesti da Meta. Il bearer token
+amministrativo deve essere inviato soltanto da un client amministrativo
+fidato su HTTPS; non chiamare questo endpoint dal browser pubblico. Evita che
+reverse proxy, strumenti di monitoraggio o client salvino il corpo della
+richiesta, che contiene temporaneamente il token Meta in chiaro.
 
-Le pratiche conservano identificativo WhatsApp, nome, moto, problema,
-disponibilità, data del consenso, stato e data di creazione. L'MVP cancella
-automaticamente le pratiche dopo 30 giorni (configurabile tra 1 e 3650 giorni).
-Le conversazioni temporanee scadono dopo 24 ore; gli ID webhook e i record
-terminali della coda di invio dopo 30 giorni. La cancellazione avviene tramite
-il worker e quindi richiede che il servizio sia attivo.
+`POST /platform/tenants` crea in un'unica transazione il tenant e il suo primo
+utente owner. Il corpo atteso è:
 
-Il titolare deve verificare il periodo scelto, completare una reale informativa
-privacy indicata da `PRIVACY_URL` e definire una procedura per richieste di
-accesso o cancellazione prima di usare dati reali. L'endpoint separato `/chat`
-può trasmettere il testo inviato a OpenAI quando `OPENAI_API_KEY` è configurata;
-non esporlo a dati personali senza informativa e valutazione del trattamento.
+```json
+{
+  "slug": "officina-a",
+  "legalName": "Officina A S.r.l.",
+  "displayName": "Officina A",
+  "privacyUrl": "https://officina.example/privacy",
+  "requestRetentionDays": 180,
+  "branding": {
+    "primaryColor": "#123456",
+    "accentColor": "#abcdef",
+    "logoUrl": "https://officina.example/logo.png"
+  },
+  "knowledge": {
+    "orari": "Lunedì-venerdì 9:00-18:00",
+    "prezzi": "I preventivi vengono valutati in officina.",
+    "azienda": "Descrizione e servizi dell'officina."
+  },
+  "waBusinessAccountId": "<id-waba-meta>",
+  "waPhoneNumberId": "<id-numero-meta>",
+  "waAccessToken": "<segreto-meta>",
+  "operator": {
+    "username": "responsabile",
+    "password": "<password-casuale-di-almeno-16-caratteri>"
+  }
+}
+```
 
-Non inserire nei test dati reali di clienti. Usare un database separato e
-credenziali di sviluppo. PostgreSQL deve essere raggiungibile solo dal backend;
-non esporre `DATABASE_URL` o token nel frontend.
+La richiesta deve includere `Authorization: Bearer <PLATFORM_ADMIN_TOKEN>`.
+L'API non restituisce il token Meta né la password. Lo slug deve essere
+minuscolo, univoco e composto da lettere, numeri e trattini; il numero Meta
+deve essere un ID numerico. La retention può essere impostata da 1 a 3650
+giorni. Logo e informativa devono usare HTTPS.
 
-## Deploy e attivazione Meta
+Ogni officina deve fornire e verificare la propria informativa privacy prima di
+attivare il servizio. La versione iniziale non raccoglie codice fiscale o altri
+dati fiscali: andranno richiesti solo quando verrà introdotta la fatturazione.
+L'owner iniziale può accedere a `https://<dominio-inbox>/operator/officina-a`.
+La gestione di ulteriori account operatore e la modifica self-service delle
+impostazioni non sono ancora esposte nell'interfaccia.
 
-Prima di attivare il webhook:
+## Endpoint
 
-1. provisionare PostgreSQL e configurare le variabili d'ambiente del backend;
-2. impostare `PRIVACY_URL` su un'informativa effettiva, `WORKSHOP_NAME` sul
-   nome corretto dell'officina e `WEB_ORIGINS` sull'origine HTTPS della inbox;
-3. impostare username/password operatore robusti nel secret manager del provider;
-4. eseguire `npm run migrate` con `DATABASE_URL`;
-5. verificare in Meta App Dashboard la callback HTTPS e i campi webhook
-   `messages`, configurando il verify token e app secret;
-6. configurare `TOKEN`, `PHONE_NUMBER_ID` e una versione Graph API supportata
-   dalla propria app.
+- `GET /health`: verifica la connessione PostgreSQL.
+- `GET /webhook` e `POST /webhook`: verifica e ricezione eventi Meta.
+- `POST /platform/tenants`: provisioning amministrativo autenticato.
+- `GET /public/tenants/:tenantSlug`: nome visualizzato, branding e URL privacy;
+  non restituisce credenziali Meta né dati delle richieste.
+- `/operator/:tenantSlug/login|session|logout|requests`: autenticazione e inbox
+  isolate per tenant.
+- `PATCH /operator/:tenantSlug/requests/:id/status`: modifica stato vincolata
+  all'ID tenant della sessione.
+- `POST /chat`: demo separata, non usata dal webhook WhatsApp.
 
-Il repository non include un `DATABASE_URL`, token Meta o configurazione di
-deploy. Le credenziali e l'informativa devono essere configurate fuori dal
-repository. L'uso di dati personali reali richiede una verifica privacy e
-operativa prima dell'attivazione.
+Configura nella Meta App centrale la callback HTTPS `/webhook`, il
+`VERIFY_TOKEN` e il campo `messages`. Meta deve inviare gli eventi dei numeri
+registrati alla piattaforma: il backend trova il tenant tramite il
+`phone_number_id`, verifica la firma con l'`APP_SECRET` centrale e usa in uscita
+il token cifrato associato al tenant. Non usare il token Meta di un cliente per
+un altro numero. Le risposte sono riservate alle conversazioni avviate dal
+cliente e alla finestra di assistenza Meta; questa implementazione non aggira i
+limiti della piattaforma e non invia campagne o messaggi promozionali.
+
+## Dati, privacy e limiti operativi
+
+Le richieste conservano ID WhatsApp, nome, moto, problema, disponibilità,
+consenso, stato e data di creazione; vengono cancellate secondo la retention
+del tenant. Conversazioni temporanee scadono dopo 24 ore; metadati webhook,
+outbox conclusa e sessioni hanno pulizia automatica. La cancellazione viene
+eseguita dal worker mentre il servizio è attivo.
+
+Il titolare deve verificare informativa, periodo di conservazione, base
+giuridica, procedure per accesso/cancellazione e accordi con i responsabili
+prima di usare dati reali. Il testo inviato a `/chat` può essere trasmesso a
+OpenAI quando `OPENAI_API_KEY` è configurata; non inoltrare dati personali a
+quel percorso senza informativa e valutazione del trattamento.
+
+Il deployment non è configurato da questo repository. Prima di attivare i
+clienti, configurare PostgreSQL e segreti nel provider, applicare le
+migrazioni, verificare domini e CORS, collaudare callback Meta e verificare i
+limiti di conservazione. Il database deve essere raggiungibile solo dal
+backend. Non inserire dati reali nei test.
 
 ## Test
 

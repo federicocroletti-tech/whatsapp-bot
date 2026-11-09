@@ -32,17 +32,24 @@ test("lists requests with a validated status filter and a hard page limit", asyn
     },
   });
   const res = response();
-  await listRequests({ query: { status: "received" } }, res);
+  await listRequests(
+    { query: { status: "received" }, operatorTenantId: "tenant-a" },
+    res,
+  );
 
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body.requests, [{ id: "1", status: "received" }]);
   assert.match(query[0], /LIMIT 100/);
-  assert.deepEqual(query[1], ["received"]);
+  assert.deepEqual(query[1], ["tenant-a", "received"]);
 });
 
 test("rejects invalid filters and request status values", async () => {
   const { listRequests, updateRequestStatus } = createOperatorHandlers({
-    pool: { async query() { throw new Error("Database must not be queried"); } },
+    pool: {
+      async query() {
+        throw new Error("Database must not be queried");
+      },
+    },
   });
 
   const invalidFilter = response();
@@ -50,11 +57,25 @@ test("rejects invalid filters and request status values", async () => {
   assert.equal(invalidFilter.statusCode, 400);
 
   const invalidId = response();
-  await updateRequestStatus({ params: { id: "1; DROP TABLE" }, body: { status: "closed" } }, invalidId);
+  await updateRequestStatus(
+    {
+      params: { id: "1; DROP TABLE" },
+      body: { status: "closed" },
+      operatorTenantId: "tenant-a",
+    },
+    invalidId,
+  );
   assert.equal(invalidId.statusCode, 400);
 
   const invalidStatus = response();
-  await updateRequestStatus({ params: { id: "1" }, body: { status: "admin" } }, invalidStatus);
+  await updateRequestStatus(
+    {
+      params: { id: "1" },
+      body: { status: "admin" },
+      operatorTenantId: "tenant-a",
+    },
+    invalidStatus,
+  );
   assert.equal(invalidStatus.statusCode, 400);
 });
 
@@ -72,11 +93,25 @@ test("updates a valid request with parameterized SQL and returns 404 for missing
   });
 
   const updated = response();
-  await updateRequestStatus({ params: { id: "42" }, body: { status: "in_review" } }, updated);
+  await updateRequestStatus(
+    {
+      params: { id: "42" },
+      body: { status: "in_review" },
+      operatorTenantId: "tenant-a",
+    },
+    updated,
+  );
   assert.equal(updated.statusCode, 200);
-  assert.deepEqual(calls[0][1], ["42", "in_review"]);
+  assert.deepEqual(calls[0][1], ["42", "tenant-a", "in_review"]);
 
   const missing = response();
-  await updateRequestStatus({ params: { id: "43" }, body: { status: "closed" } }, missing);
+  await updateRequestStatus(
+    {
+      params: { id: "43" },
+      body: { status: "closed" },
+      operatorTenantId: "tenant-a",
+    },
+    missing,
+  );
   assert.equal(missing.statusCode, 404);
 });
